@@ -1,0 +1,675 @@
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+
+from engine import (
+    prepare_fund_data,
+    generate_personalized_recommendations,
+    create_excel_report
+)
+
+# --------------------------------------------------
+# PAGE CONFIGURATION
+# --------------------------------------------------
+
+st.set_page_config(
+    page_title="Mutual Fund Intelligence",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --------------------------------------------------
+# CUSTOM CSS
+# --------------------------------------------------
+
+st.markdown("""
+<style>
+.stApp {
+    background-color: #0b1120;
+    color: #e5e7eb;
+}
+[data-testid="stSidebar"] {
+    background-color: #111827;
+}
+[data-testid="stMetric"] {
+    background-color: #172033;
+    padding: 18px;
+    border-radius: 12px;
+    border: 1px solid #273449;
+}
+h1, h2, h3 {
+    color: #f8fafc;
+}
+div[data-testid="stDataFrame"] {
+    border: 1px solid #273449;
+    border-radius: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# --------------------------------------------------
+# LOAD PROJECT DATA
+# --------------------------------------------------
+
+@st.cache_data
+def load_project():
+    return prepare_fund_data()
+
+
+try:
+    project_data = load_project()
+
+    original_df = project_data["original"]
+    cleaned_df = project_data["cleaned"]
+    model_df = project_data["model"]
+    risk_df = project_data["risk_analysis"]
+
+except Exception as error:
+    st.error(f"Unable to load project data: {error}")
+    st.stop()
+
+
+# --------------------------------------------------
+# SIDEBAR NAVIGATION
+# --------------------------------------------------
+
+st.sidebar.title("📈 Fund Intelligence")
+st.sidebar.caption("Mutual Fund Recommendation System")
+
+page = st.sidebar.radio(
+    "NAVIGATION",
+    [
+        "Dashboard",
+        "Investor Profile",
+        "Recommendations",
+        "Fund Comparison",
+        "Excel Reports",
+        "About Project"
+    ]
+)
+
+st.sidebar.divider()
+st.sidebar.caption("Academic Project | Mutual Fund Analytics")
+
+
+# --------------------------------------------------
+# HELPER FUNCTION
+# --------------------------------------------------
+
+def format_percentage(value):
+    if pd.isna(value):
+        return "N/A"
+    return f"{value:.2f}%"
+
+
+def display_fund_table(data):
+    columns = [
+        "recommendation_rank",
+        "scheme_name",
+        "category",
+        "volatility_group",
+        "returns_1yr",
+        "returns_3yr",
+        "expense_ratio",
+        "fund_score_percentage"
+    ]
+
+    available = [c for c in columns if c in data.columns]
+
+    display_data = data[available].copy()
+
+    rename = {
+        "recommendation_rank": "Rank",
+        "scheme_name": "Fund Name",
+        "category": "Category",
+        "volatility_group": "Risk Group",
+        "returns_1yr": "1Y Return (%)",
+        "returns_3yr": "3Y Return (%)",
+        "expense_ratio": "Expense Ratio (%)",
+        "fund_score_percentage": "Fund Score (%)"
+    }
+
+    return display_data.rename(columns=rename)
+
+
+# --------------------------------------------------
+# DASHBOARD
+# --------------------------------------------------
+
+if page == "Dashboard":
+
+    st.title("📊 Mutual Fund Analytics Dashboard")
+
+    st.write(
+        "Explore mutual fund performance, risk distribution "
+        "and historical investment metrics."
+    )
+
+    total_funds = len(original_df)
+    average_return = model_df["returns_3yr"].mean()
+    average_expense = model_df["expense_ratio"].mean()
+    average_rating = (
+        cleaned_df["rating"].mean()
+        if "rating" in cleaned_df.columns else 0
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("Total Funds", f"{total_funds:,}")
+    col2.metric("Eligible Scored Funds", f"{len(model_df):,}")
+    col3.metric("Average 3Y Return", format_percentage(average_return))
+    col4.metric("Average Expense Ratio", format_percentage(average_expense))
+
+    st.divider()
+
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("Fund Category Distribution")
+
+        category_data = (
+            cleaned_df["category"]
+            .fillna("Unknown")
+            .value_counts()
+            .reset_index()
+        )
+
+        category_data.columns = ["Category", "Count"]
+
+        fig = px.bar(
+            category_data,
+            x="Category",
+            y="Count",
+            color="Category",
+            template="plotly_dark"
+        )
+
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with right:
+        st.subheader("Volatility Distribution")
+
+        risk_distribution = (
+            risk_df["volatility_group"]
+            .value_counts()
+            .reset_index()
+        )
+
+        risk_distribution.columns = ["Risk Group", "Funds"]
+
+        fig = px.pie(
+            risk_distribution,
+            names="Risk Group",
+            values="Funds",
+            hole=0.55,
+            template="plotly_dark"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("Top 10 Funds by Project Score")
+
+    top_funds = model_df.head(10).copy()
+
+    top_columns = [
+        "scheme_name",
+        "category",
+        "returns_3yr",
+        "expense_ratio",
+        "fund_score_percentage"
+    ]
+
+    st.dataframe(
+        top_funds[top_columns].rename(columns={
+            "scheme_name": "Fund Name",
+            "category": "Category",
+            "returns_3yr": "3Y Return (%)",
+            "expense_ratio": "Expense Ratio (%)",
+            "fund_score_percentage": "Fund Score (%)"
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# --------------------------------------------------
+# INVESTOR PROFILE
+# --------------------------------------------------
+
+elif page == "Investor Profile":
+
+    st.title("👤 Investor Profile")
+
+    st.write(
+        "Enter your investment preferences to generate "
+        "risk-based mutual fund recommendations."
+    )
+
+    with st.form("investor_form"):
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            risk_appetite = st.selectbox(
+                "Risk Appetite",
+                ["Low", "Moderate", "High"]
+            )
+
+            investment_amount = st.number_input(
+                "Investment Amount (₹)",
+                min_value=1000,
+                max_value=100000000,
+                value=12000,
+                step=1000
+            )
+
+            investment_duration = st.number_input(
+                "Investment Duration (Years)",
+                min_value=1,
+                max_value=40,
+                value=5
+            )
+
+        with col2:
+            investment_mode = st.selectbox(
+                "Investment Mode",
+                ["SIP", "Lump Sum"]
+            )
+
+            categories = ["Any"] + sorted(
+                cleaned_df["category"]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            preferred_category = st.selectbox(
+                "Preferred Fund Category",
+                categories
+            )
+
+        submitted = st.form_submit_button(
+            "Generate Recommendations",
+            use_container_width=True
+        )
+
+    if submitted:
+
+        profile = {
+            "risk_appetite": risk_appetite,
+            "investment_amount": investment_amount,
+            "investment_duration": investment_duration,
+            "investment_mode": investment_mode,
+            "preferred_category": preferred_category
+        }
+
+        st.session_state["investor_profile"] = profile
+
+        recommendations = generate_personalized_recommendations(
+            profile,
+            risk_df
+        )
+
+        st.session_state["recommendations"] = recommendations
+
+        st.success("Investor profile saved and recommendations generated.")
+
+        st.subheader("Investor Profile Summary")
+
+        summary1, summary2, summary3 = st.columns(3)
+
+        summary1.metric("Risk Appetite", risk_appetite)
+        summary2.metric("Investment Mode", investment_mode)
+        summary3.metric("Investment Amount", f"₹{investment_amount:,.0f}")
+
+        if investment_mode == "SIP":
+            monthly_budget = (
+                investment_amount / (investment_duration * 12)
+            )
+            st.info(
+                f"Estimated monthly budget: ₹{monthly_budget:,.2f}"
+            )
+
+        st.write(
+            f"Investment duration: {investment_duration} years"
+        )
+
+        st.write(
+            f"Preferred category: {preferred_category}"
+        )
+
+        if recommendations.empty:
+            st.warning(
+                "No funds match all selected filters. "
+                "Try another risk appetite, category or investment amount."
+            )
+
+
+# --------------------------------------------------
+# RECOMMENDATIONS
+# --------------------------------------------------
+
+elif page == "Recommendations":
+
+    st.title("🎯 Personalized Recommendations")
+
+    if "recommendations" not in st.session_state:
+
+        st.info(
+            "Please complete the Investor Profile page first "
+            "to generate recommendations."
+        )
+
+    else:
+
+        recommendations = st.session_state["recommendations"]
+
+        if recommendations.empty:
+            st.warning("No recommendations are currently available.")
+
+        else:
+
+            profile = st.session_state["investor_profile"]
+
+            st.write(
+                f"Recommendations for a **{profile['risk_appetite']} "
+                f"risk** investor using **{profile['investment_mode']}**."
+            )
+
+            st.metric(
+                "Recommended Funds",
+                len(recommendations)
+            )
+
+            st.dataframe(
+                display_fund_table(recommendations),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.divider()
+
+            st.subheader("Recommendation Details")
+
+            selected_fund = st.selectbox(
+                "Select a fund",
+                recommendations["scheme_name"].tolist()
+            )
+
+            fund = recommendations[
+                recommendations["scheme_name"] == selected_fund
+            ].iloc[0]
+
+            st.markdown(f"### {fund['scheme_name']}")
+
+            a, b, c = st.columns(3)
+
+            a.metric(
+                "3-Year Return",
+                format_percentage(fund["returns_3yr"])
+            )
+
+            b.metric(
+                "Expense Ratio",
+                format_percentage(fund["expense_ratio"])
+            )
+
+            c.metric(
+                "Project Fund Score",
+                format_percentage(fund["fund_score_percentage"])
+            )
+
+            st.write("**Recommendation Reason**")
+            st.write(fund["recommendation_reason"])
+
+            st.write("**Preliminary Suitability Status**")
+            st.write(fund["suitability_status"])
+
+            st.caption(
+                "Project ranking is based on historical data and "
+                "the specified scoring methodology. It is not "
+                "a guarantee of future returns."
+            )
+
+
+# --------------------------------------------------
+# FUND COMPARISON
+# --------------------------------------------------
+
+elif page == "Fund Comparison":
+
+    st.title("⚖️ Fund Comparison")
+
+    st.write(
+        "Compare mutual funds using historical returns, "
+        "expense ratio, volatility and fund age."
+    )
+
+    available_funds = model_df["scheme_name"].dropna().tolist()
+
+    selected_funds = st.multiselect(
+        "Choose funds to compare",
+        available_funds,
+        default=available_funds[:2]
+    )
+
+    if selected_funds:
+
+        comparison = model_df[
+            model_df["scheme_name"].isin(selected_funds)
+        ].copy()
+
+        comparison_columns = [
+            "scheme_name",
+            "category",
+            "returns_1yr",
+            "returns_3yr",
+            "returns_5yr",
+            "expense_ratio",
+            "fund_age_yr",
+            "sd",
+            "sharpe",
+            "fund_score_percentage"
+        ]
+
+        comparison_columns = [
+            c for c in comparison_columns
+            if c in comparison.columns
+        ]
+
+        st.dataframe(
+            comparison[comparison_columns].rename(columns={
+                "scheme_name": "Fund Name",
+                "category": "Category",
+                "returns_1yr": "1Y Return (%)",
+                "returns_3yr": "3Y Return (%)",
+                "returns_5yr": "5Y Return (%)",
+                "expense_ratio": "Expense Ratio (%)",
+                "fund_age_yr": "Fund Age (Years)",
+                "sd": "Standard Deviation",
+                "sharpe": "Sharpe Ratio",
+                "fund_score_percentage": "Fund Score (%)"
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        if len(comparison) > 1:
+
+            st.subheader("3-Year Return Comparison")
+
+            fig = px.bar(
+                comparison,
+                x="scheme_name",
+                y="returns_3yr",
+                color="scheme_name",
+                template="plotly_dark",
+                labels={
+                    "scheme_name": "Fund",
+                    "returns_3yr": "3-Year Return (%)"
+                }
+            )
+
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        st.info("Select at least one fund to compare.")
+
+
+# --------------------------------------------------
+# EXCEL REPORTS
+# --------------------------------------------------
+
+elif page == "Excel Reports":
+
+    st.title("📥 Excel Reports")
+
+    st.write(
+        "Generate an Excel workbook containing investor profile, "
+        "recommendations, fund comparison, risk analysis "
+        "and methodology."
+    )
+
+    if "recommendations" not in st.session_state:
+
+        st.info(
+            "Generate recommendations from the Investor Profile "
+            "page before downloading a report."
+        )
+
+    else:
+
+        recommendations = st.session_state["recommendations"]
+        profile = st.session_state["investor_profile"]
+
+        if recommendations.empty:
+            st.warning(
+                "There are no recommendations to include in the report."
+            )
+
+        else:
+
+            excel_file = create_excel_report(
+                profile,
+                recommendations,
+                model_df,
+                risk_df
+            )
+
+            filename = (
+                f"Mutual_Fund_Report_"
+                f"{profile['risk_appetite']}_"
+                f"{profile['investment_mode'].replace(' ', '_')}.xlsx"
+            )
+
+            st.success("Excel report is ready.")
+
+            st.download_button(
+                label="Download Excel Report",
+                data=excel_file,
+                file_name=filename,
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                use_container_width=True
+            )
+
+            st.write("**Workbook sheets**")
+
+            for sheet in [
+                "Investor Profile",
+                "Top Recommendations",
+                "Fund Comparison",
+                "Suitability Assessment",
+                "Risk Analysis",
+                "Review Required",
+                "All Ranked Funds",
+                "Methodology"
+            ]:
+                st.write(f"✓ {sheet}")
+
+
+# --------------------------------------------------
+# ABOUT PROJECT
+# --------------------------------------------------
+
+elif page == "About Project":
+
+    st.title("ℹ️ About the Project")
+
+    st.subheader("Mutual Fund Recommendation System")
+
+    st.write(
+        """
+        This project analyses mutual fund data and generates
+        personalized fund recommendations based on investor
+        risk appetite, investment amount, investment duration,
+        investment mode and preferred category.
+        """
+    )
+
+    st.subheader("Project Workflow")
+
+    st.markdown("""
+    1. Dataset loading
+    2. Data cleaning and preprocessing
+    3. Exploratory data analysis
+    4. Fund scoring using MinMax scaling
+    5. Dataset-relative volatility classification
+    6. Investment eligibility filtering
+    7. Personalized fund recommendations
+    8. Excel report generation
+    """)
+
+    st.subheader("Fund Scoring Methodology")
+
+    weights = pd.DataFrame({
+        "Parameter": [
+            "3-Year Returns",
+            "Inverse Expense Ratio",
+            "Fund Age",
+            "1-Year Returns"
+        ],
+        "Weight": [40, 25, 20, 15]
+    })
+
+    fig = px.pie(
+        weights,
+        names="Parameter",
+        values="Weight",
+        hole=0.5,
+        template="plotly_dark"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Important Limitations")
+
+    st.markdown("""
+    - Risk groups are based on dataset-relative standard deviation
+      percentiles, not official SEBI Riskometer categories.
+    - Historical returns do not guarantee future performance.
+    - Scheme-specific recommended holding periods are not available
+      in the dataset.
+    - Suitability checks are preliminary screening only.
+    - The scoring weights are experimental project assumptions,
+      not an industry-standard investment formula.
+    """)
+
+    st.warning(
+        "This application is an academic analytics project, "
+        "not a SEBI-registered investment advisory service."
+    )
+
+    st.divider()
+
+    st.caption("Mutual Fund Recommendation System | Academic Project")
